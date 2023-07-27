@@ -2,30 +2,31 @@
 #include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdio.h>
+#include <threads.h>
 
 
 #define LOG(x) \
      __android_log_print(ANDROID_LOG_VERBOSE, "Example", "%s", x)
+
 #define MAX_LEN 512
 
 const char* statusPath = "/proc/self/status";
+const char* tracerPID = "TracerPid";
 
-int detectDebugger();
+void detectDebugger();
 void crashApp();
 ssize_t readLine(int fd, char* buff, int max_len);
-int
+int checkTracerPid(char* buf);
 
-__attribute((constructor()))
+__attribute__((constructor))
 void fridaCheck() {
-    int status = -1;
     LOG("Starting frida check");
 
-    LOG("Starting debug check");
-    status = detectDebugger();
+    LOG("Starting debug thread");
 
-    if(status == -1) {
-        crashApp();
-    }
+    pthread_t debug;
+    pthread_create(&debug, NULL, (void*)detectDebugger, NULL);
 }
 
 void crashApp() {
@@ -34,13 +35,24 @@ void crashApp() {
     *invalidAddress = 0;
 }
 
-int detectDebugger() {
-    char buf[MAX_LEN];
-    int status = openat(0, statusPath, 0);
-    while(readLine(status, buf, MAX_LEN) > 0) {
-        LOG(buf);
+void detectDebugger() {
+    LOG("Starting debug thread");
+    struct timespec timereq;
+    timereq.tv_sec = 5; //Changing to 5 seconds from 1 second
+    timereq.tv_nsec = 0;
+
+    while(1) {
+        char buf[MAX_LEN];
+        int status = openat(0, statusPath, 0);
+        while (readLine(status, buf, MAX_LEN) > 0) {
+            if (checkTracerPid(buf)) {
+                close(status);
+                crashApp();
+            }
+        }
+        close(status);
+        nanosleep(&timereq, NULL);
     }
-    return 0;
 }
 
 ssize_t readLine(int fd, char* buff, int max_len) {
@@ -67,4 +79,18 @@ ssize_t readLine(int fd, char* buff, int max_len) {
     } while(c < max_len - 1);
 
     return ret;
+}
+
+int checkTracerPid(char* buf) {
+    const char* tracer = strstr(buf, tracerPID);
+    if(tracer == NULL) {
+        return 0;
+    }
+    char* c_pid;
+    strtok_r(buf, ":", &c_pid);
+    int pid = atoi(c_pid);
+    if(pid != 0) {
+        return -1;
+    }
+    return 0;
 }
